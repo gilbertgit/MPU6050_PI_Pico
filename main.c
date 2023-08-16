@@ -5,6 +5,13 @@
 
 float cal_x, cal_y, cal_z = 0;
 
+#define RAD2DEG 57.2957795131
+
+struct Attitude
+{
+    float r, p, y;
+} attitude;
+
 int main()
 {
     stdio_init_all();
@@ -121,10 +128,7 @@ int main()
         // Print all the measurements
         // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
         printf("%f,%f,%f\n", attitude.r, attitude.p, attitude.y);
-
-        // Print all the measurements
-        // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
-        printf("%f,%f,%f\n", x, y, z);
+        
         // printf("Accel: %f, %f, %f - Gyro: %f, %f, %f - Temp: %f°C - Temp: %f°F\n", accel->x, accel->y, accel->z, gyro->x, gyro->y, gyro->z, tempC, tempF);
 
         // // Print all motion interrupt flags
