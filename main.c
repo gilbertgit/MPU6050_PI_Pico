@@ -97,13 +97,30 @@ int main()
         float tempC = mpu6050_get_temperature_c(&mpu6050);
         float tempF = mpu6050_get_temperature_f(&mpu6050);
 
-        float x = accel->x;
-        float y = accel->y;
-        float z = accel->z;
+        float accel_x = accel->x - cal_x;
+        float accel_y = accel->y - cal_y;
+        float accel_z = accel->z - cal_z;
 
-        x = x - cal_x;
-        y = y - cal_y;
-        z = z - cal_z;
+        // Complementary filter
+        float accelPitch = atan2(accel_y, accel_z) * RAD2DEG;
+        float accelRoll = atan2(accel_x, accel_z) * RAD2DEG;
+
+        float _tau = 0.98f;
+        float _dt = 0.004f;
+
+        // float _dt = 0.000010f; // this is a guess
+        // clock_t c_time = clock();
+        // int diff = (double)(c_time - t);
+        // float _dt = (float)diff / 1000000.f;
+        // printf("Delta Time: %f\n", _dt);
+
+        attitude.r = _tau * (attitude.r - gyro->y * _dt) + (1.f - _tau) * accel_y;
+        attitude.p = _tau * (attitude.p + gyro->x * _dt) + (1.f - _tau) * accel_x;
+        attitude.y += gyro->z * _dt;
+
+        // Print all the measurements
+        // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
+        printf("%f,%f,%f\n", attitude.r, attitude.p, attitude.y);
 
         // Print all the measurements
         // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
