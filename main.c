@@ -1,6 +1,7 @@
 #include "stdio.h"
 #include "pico/stdlib.h"
 #include "haw/MPU6050.h"
+#include "hardware/pwm.h"
 #include <math.h>
 
 float cal_x, cal_y, cal_z = 0;
@@ -12,9 +13,114 @@ struct Attitude
     float r, p, y;
 } attitude;
 
+int DEG_45 = 490;
+int DEG_0 = 690;
+int DEG_NEG_45 = 890;
+
+uint PIN_OUT_1 = 14;
+uint PIN_OUT_2 = 15;
+uint PIN_OUT_3 = 10;
+uint PIN_OUT_4 = 11;
+
+uint channel_1, channel_2, channel_3, channel_4;
+uint slice_1, slice_2, slice_3, slice_4;
+int servo_deg_1, servo_deg_2, servo_deg_3, servo_deg_4;
+
+void init_servos() {
+// Tell GPIO 14 that it's allocated to the PWM
+    gpio_set_function(PIN_OUT_1, GPIO_FUNC_PWM);
+    gpio_set_function(PIN_OUT_2, GPIO_FUNC_PWM);
+    gpio_set_function(PIN_OUT_3, GPIO_FUNC_PWM);
+    gpio_set_function(PIN_OUT_4, GPIO_FUNC_PWM);
+
+    // Find out which PWM slice is connected to GPIO 
+    slice_1 = pwm_gpio_to_slice_num(PIN_OUT_1);
+    slice_2 = pwm_gpio_to_slice_num(PIN_OUT_2);
+    slice_3 = pwm_gpio_to_slice_num(PIN_OUT_3);
+    slice_4 = pwm_gpio_to_slice_num(PIN_OUT_4);
+
+    channel_1 = pwm_gpio_to_channel(PIN_OUT_1);
+    channel_2 = pwm_gpio_to_channel(PIN_OUT_2);
+    channel_3 = pwm_gpio_to_channel(PIN_OUT_3);
+    channel_4 = pwm_gpio_to_channel(PIN_OUT_4);
+
+    pwm_set_clkdiv(slice_1, 256.0f);  /// Setting the divider to slow down the clock
+    pwm_set_wrap(slice_1, 9804);      /// setting the Wrap time to 9764 (20 ms)
+    pwm_set_enabled(slice_1, true);
+
+    pwm_set_clkdiv(slice_2, 256.0f);  /// Setting the divider to slow down the clock
+    pwm_set_wrap(slice_2, 9804);      /// setting the Wrap time to 9764 (20 ms)
+    pwm_set_enabled(slice_2, true);
+
+    pwm_set_clkdiv(slice_3, 256.0f);  /// Setting the divider to slow down the clock
+    pwm_set_wrap(slice_3, 9804);      /// setting the Wrap time to 9764 (20 ms)
+    pwm_set_enabled(slice_3, true);
+
+    pwm_set_clkdiv(slice_4, 256.0f);  /// Setting the divider to slow down the clock
+    pwm_set_wrap(slice_4, 9804);      /// setting the Wrap time to 9764 (20 ms)
+    pwm_set_enabled(slice_4, true);
+
+    pwm_set_chan_level(slice_1, channel_1, DEG_0);
+    pwm_set_chan_level(slice_2, channel_2, DEG_0);
+    pwm_set_chan_level(slice_3, channel_3, DEG_0);
+    pwm_set_chan_level(slice_4, channel_4, DEG_0);
+
+    servo_deg_1 = DEG_0;
+    servo_deg_2 = DEG_0;
+    servo_deg_3 = DEG_0;
+    servo_deg_4 = DEG_0;
+
+}
+
+// TODO: void trim()
+
+void move(uint slice, uint channel, int deg) {
+    int max_deg = DEG_0;
+    // out of range?
+    if (deg < DEG_45) {
+        max_deg = DEG_45;
+    }
+    else if (deg > DEG_NEG_45)
+    {
+        max_deg = DEG_NEG_45;
+    }
+    else {
+        max_deg = deg;
+    }
+
+    if(channel == channel_1) {
+        if ((servo_deg_2 > DEG_0 && deg < DEG_0) || (servo_deg_4 < DEG_0 && deg > DEG_0)) {
+            max_deg = DEG_0;
+        }
+        servo_deg_1 = max_deg;
+    }
+    if (channel == channel_2) {
+        if ((servo_deg_3 > DEG_0 && deg < DEG_0) || (servo_deg_1 < DEG_0 && deg > DEG_0)) {
+            max_deg = DEG_0;
+        }
+        servo_deg_2 = max_deg;
+    }
+    if (channel == channel_3) {
+        if ((servo_deg_4 > DEG_0 && deg < DEG_0) || (servo_deg_2 < DEG_0 && deg > DEG_0)) {
+            max_deg = DEG_0;
+        }
+        servo_deg_3 = max_deg;
+    }
+    if (channel == channel_4) {
+        if ((servo_deg_1 > DEG_0 && deg < DEG_0) || (servo_deg_3 < DEG_0 && deg > DEG_0)) {
+            max_deg = DEG_0;
+        }
+        servo_deg_4 = max_deg;
+    }
+
+    pwm_set_chan_level(slice, channel, max_deg);
+}
+
 int main()
 {
     stdio_init_all();
+
+    init_servos();
 
     // Setup I2C properly
     gpio_init(PICO_DEFAULT_I2C_SDA_PIN);
@@ -35,7 +141,7 @@ int main()
         // Set scale of gyroscope
         mpu6050_set_scale(&mpu6050, MPU6050_SCALE_2000DPS);
         // Set range of accelerometer
-        mpu6050_set_range(&mpu6050, MPU6050_RANGE_16G);
+        mpu6050_set_range(&mpu6050, MPU6050_RANGE_2G);
 
         // Enable temperature, gyroscope and accelerometer readings
         mpu6050_set_temperature_measuring(&mpu6050, true);
@@ -88,6 +194,14 @@ int main()
         }
     }
 
+    int i;
+  
+    // Calculate slope and intercept
+    int slope = (DEG_NEG_45 - DEG_45) / (10 - (-10)); 
+    int intercept = DEG_45 - (-10) * slope;
+
+    // return 0;
+
     while (1)
     {
         // Fetch all data from the sensor | I2C is only used here
@@ -127,7 +241,7 @@ int main()
 
         // Print all the measurements
         // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
-        printf("%f,%f,%f\n", attitude.r, attitude.p, attitude.y);
+        printf("Roll: %.4f, Pitch: %.4f, Yall: %.4f\n", attitude.r, attitude.p, attitude.y);
         
         // printf("Accel: %f, %f, %f - Gyro: %f, %f, %f - Temp: %f°C - Temp: %f°F\n", accel->x, accel->y, accel->z, gyro->x, gyro->y, gyro->z, tempC, tempF);
 
@@ -148,7 +262,22 @@ int main()
         //        activities->isPosActivityOnZ,
         //        activities->isNegActivityOnZ);
 
-        sleep_ms(100);
+        int value = slope * attitude.r + intercept;
+        int value2 = slope * (attitude.r * -1) + intercept;
+
+        int value3 = slope * attitude.p + intercept;
+        int value4 = slope * (attitude.p * -1) + intercept;
+
+
+        printf("%d\n", value);
+        printf("%d\n", value2);
+        // move(slice_1, channel_1, value);
+        // move(slice_3, channel_3, value2);
+
+        move(slice_2, channel_2, value3);
+        move(slice_4, channel_4, value4);
+
+        sleep_ms(10);
     }
 
     return 0;
