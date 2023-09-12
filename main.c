@@ -3,14 +3,31 @@
 #include "haw/MPU6050.h"
 #include "hardware/pwm.h"
 #include <math.h>
+#include "kalman.h"
+
+
+#define RESTRICT_PITCH
 
 float cal_x, cal_y, cal_z = 0;
 
 #define RAD2DEG 57.2957795131
 
+Kalman kalmanX; // Kalman filter instances
+Kalman kalmanY;  
+
+int16_t accX, accY, accZ; // Accelerometer values 
+int16_t gyroX, gyroY, gyroZ; // Gyroscope values
+int16_t tempRaw; // Temperature raw value
+
+double gyroXangle, gyroYangle; // Angle from gyro integration
+double compAngleX, compAngleY; // Angle from complementary filter  
+double kalAngleX, kalAngleY; // Angle from Kalman filter
+
+uint32_t timer;
+
 struct Attitude
 {
-    float r, p, y;
+    float roll, pitch, yaw;
 } attitude;
 
 int DEG_45 = 490;
@@ -163,6 +180,21 @@ int main()
 
         // mpu6050_calibrate_gyro(&mpu6050, 5);
 
+        // Wait for sensor to stabilize
+        sleep_ms(100);
+
+        kalman_init(&kalmanX);
+        kalman_init(&kalmanY);
+
+        // Set kalman starting angle
+        double roll = 0; 
+        double pitch = 0;
+        kalman_setAngle(&kalmanX, roll);
+        kalman_setAngle(&kalmanY, pitch);
+
+
+        timer = get_absolute_time();
+
         // Calibrate accel
         for(int samples = 0; samples < 2000; samples++) {
             mpu6050_event(&mpu6050);
@@ -181,6 +213,8 @@ int main()
         cal_x = cal_x / 2000.0f;
         cal_y = cal_y / 2000.0f;
         cal_z = cal_z / 2000.0f;
+
+        
 
         // printf("%f,%f,%f\n",cal_x, cal_y, cal_z);
     }
@@ -222,6 +256,7 @@ int main()
         float accel_y = accel->y - cal_y;
         float accel_z = accel->z - cal_z;
 
+        ///////////IMPORTANT - DO NOT LOOSE ////////////
         // Complementary filter
         float accelPitch = atan2(accel_y, accel_z) * RAD2DEG;
         float accelRoll = atan2(accel_x, accel_z) * RAD2DEG;
@@ -233,15 +268,52 @@ int main()
         // clock_t c_time = clock();
         // int diff = (double)(c_time - t);
         // float _dt = (float)diff / 1000000.f;
-        // printf("Delta Time: %f\n", _dt);
+        
+        
+        attitude.roll = _tau * (attitude.roll - gyro->y * _dt) + (1.f - _tau) * accel_y;
+        attitude.pitch = _tau * (attitude.pitch + gyro->x * _dt) + (1.f - _tau) * accel_x;
+        attitude.yaw += gyro->z * _dt;
+        /////////////////////////////////////////////
 
-        attitude.r = _tau * (attitude.r - gyro->y * _dt) + (1.f - _tau) * accel_y;
-        attitude.p = _tau * (attitude.p + gyro->x * _dt) + (1.f - _tau) * accel_x;
-        attitude.y += gyro->z * _dt;
+
+        // Kalman filter
+          // Convert gyro values to deg/s
+        double gyroXrate = gyro->x / 131.0;  
+        double gyroYrate = gyro->y / 131.0; 
+
+        // Calculate angles
+        double dt = 0.004; // 400Hz
+        double roll, pitch;
+
+        #ifdef RESTRICT_PITCH
+            roll = atan2(accY, accZ) * RAD2DEG;
+            pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD2DEG;  
+        #else
+            roll = atan(accY / sqrt(accel_x * accel_x + accel_z * accel_z)) * RAD2DEG;
+            pitch = atan2(-accel_x, accel_z) * RAD2DEG;
+        #endif
+
+        kalAngleX = kalman_getAngle(&kalmanX, roll, gyroXrate, dt);
+        kalAngleY = kalman_getAngle(&kalmanY, pitch, gyroYrate, dt);
+
+        gyroXangle += gyroXrate * dt; // Calculate gyro angle without any filter
+        gyroYangle += gyroYrate * dt;
+
+        // Reset the gyro angle when it has drifted too much
+        if (gyroXangle < -180 || gyroXangle > 180)
+            gyroXangle = kalAngleX;
+        if (gyroYangle < -180 || gyroYangle > 180)
+            gyroYangle = kalAngleY;
 
         // Print all the measurements
         // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
-        printf("Roll: %.4f, Pitch: %.4f, Yall: %.4f\n", attitude.r, attitude.p, attitude.y);
+        // printf("Roll: %.4f, Pitch: %.4f, Yaw: %.4f\n", attitude.r, attitude.p, attitude.y);
+        printf(">C-Roll:%.4f\n", attitude.roll);
+        printf(">C-Pitch:%.4f\n", attitude.pitch);
+
+        printf(">K-Roll:%.4f\n", kalAngleX);
+        printf(">K-Pitch:%.4f\n", kalAngleY);
+        // printf(">Yaw:%.4f\n", attitude.y);
         
         // printf("Accel: %f, %f, %f - Gyro: %f, %f, %f - Temp: %f°C - Temp: %f°F\n", accel->x, accel->y, accel->z, gyro->x, gyro->y, gyro->z, tempC, tempF);
 
@@ -262,20 +334,20 @@ int main()
         //        activities->isPosActivityOnZ,
         //        activities->isNegActivityOnZ);
 
-        int value = slope * attitude.r + intercept;
-        int value2 = slope * (attitude.r * -1) + intercept;
+        // int value = slope * attitude.r + intercept;
+        // int value2 = slope * (attitude.r * -1) + intercept;
 
-        int value3 = slope * attitude.p + intercept;
-        int value4 = slope * (attitude.p * -1) + intercept;
+        // int value3 = slope * attitude.p + intercept;
+        // int value4 = slope * (attitude.p * -1) + intercept;
 
 
-        printf("%d\n", value);
-        printf("%d\n", value2);
+        // printf("%d\n", value);
+        // printf("%d\n", value2);
         // move(slice_1, channel_1, value);
         // move(slice_3, channel_3, value2);
 
-        move(slice_2, channel_2, value3);
-        move(slice_4, channel_4, value4);
+        // move(slice_2, channel_2, value3);
+        // move(slice_4, channel_4, value4);
 
         sleep_ms(10);
     }
