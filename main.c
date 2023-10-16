@@ -25,6 +25,17 @@ double kalAngleX, kalAngleY; // Angle from Kalman filter
 
 uint32_t timer;
 
+// PID constants
+double kp = 2.0; 
+double ki = 0.5;
+double kd = 0.0;
+
+// Global variables
+double motor1_pwm = 0;
+double motor2_pwm = 0;
+double last_error = 0;
+double integral = 0;
+
 struct Attitude
 {
     float roll, pitch, yaw;
@@ -34,6 +45,9 @@ int DEG_45 = 490;
 int DEG_0 = 690;
 int DEG_NEG_45 = 890;
 
+int MOTOR_PWM_MAX = 1000;
+int MOTOR_PWM_MIN = 512;
+
 uint PIN_OUT_1 = 14;
 uint PIN_OUT_2 = 15;
 uint PIN_OUT_3 = 10;
@@ -42,6 +56,21 @@ uint PIN_OUT_4 = 11;
 uint channel_1, channel_2, channel_3, channel_4;
 uint slice_1, slice_2, slice_3, slice_4;
 int servo_deg_1, servo_deg_2, servo_deg_3, servo_deg_4;
+
+uint THROT_PIN = 14;
+uint THROT_CHANNEL, THROT_SLICE;
+
+void init_motors() {
+    gpio_set_function(THROT_PIN, GPIO_FUNC_PWM);
+    THROT_SLICE = pwm_gpio_to_slice_num(THROT_PIN);
+    THROT_CHANNEL = pwm_gpio_to_channel(THROT_PIN);
+
+    pwm_set_clkdiv(THROT_SLICE, 256.0f);  /// Setting the divider to slow down the clock
+    pwm_set_wrap(THROT_SLICE, 9804);      /// setting the Wrap time to 9764 (20 ms)
+    pwm_set_enabled(THROT_SLICE, true);
+
+    pwm_set_chan_level(THROT_SLICE, THROT_CHANNEL, MOTOR_PWM_MIN);
+}
 
 void init_servos() {
 // Tell GPIO 14 that it's allocated to the PWM
@@ -133,11 +162,51 @@ void move(uint slice, uint channel, int deg) {
     pwm_set_chan_level(slice, channel, max_deg);
 }
 
+double constrain(int value, int min, int max) {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+// PID control function  
+void pid_control(double target, double current) {
+
+  // Calculate error
+  double error = target - current;
+
+  // Proportional term
+  double proportional = kp * error;
+
+  // Integral term
+  
+  integral = integral + (ki * error * 0.004);
+
+  // Derivative term
+  double derivative = kd * ((error) / 0.004);
+
+  // Calculate output
+  double output = proportional + integral + derivative;
+
+  // Update last error
+  last_error = error;
+
+  // Apply output to motor
+//   motor1_pwm += output;
+//   motor2_pwm -= output;
+  motor2_pwm = output;
+
+  // Constrain PWM
+//   motor1_pwm = constrain(motor1_pwm, -8, 8);
+//   motor2_pwm = constrain(motor2_pwm, -8, 8);
+
+}
+
 int main()
 {
     stdio_init_all();
 
     init_servos();
+    init_motors();
 
     // Setup I2C properly
     gpio_init(PICO_DEFAULT_I2C_SDA_PIN);
@@ -178,8 +247,6 @@ int main()
         mpu6050_set_zero_motion_detection_threshold(&mpu6050, 4);
         mpu6050_set_zero_motion_detection_duration(&mpu6050, 2);
 
-        // mpu6050_calibrate_gyro(&mpu6050, 5);
-
         // Wait for sensor to stabilize
         sleep_ms(100);
 
@@ -214,9 +281,8 @@ int main()
         cal_y = cal_y / 2000.0f;
         cal_z = cal_z / 2000.0f;
 
-        
+        mpu6050_calibrate_gyro(&mpu6050, 255); // 255 sample on gyro calibration
 
-        // printf("%f,%f,%f\n",cal_x, cal_y, cal_z);
     }
     else
     {
@@ -231,10 +297,11 @@ int main()
     int i;
   
     // Calculate slope and intercept
-    int slope = (DEG_NEG_45 - DEG_45) / (10 - (-10)); 
-    int intercept = DEG_45 - (-10) * slope;
+    int motor_slope = (MOTOR_PWM_MIN - MOTOR_PWM_MAX) / (24 - (-24)); 
+    int motor_intercept = MOTOR_PWM_MAX - (-24) * motor_slope;
+    
 
-    // return 0;
+    sleep_ms(5000);
 
     while (1)
     {
@@ -258,26 +325,24 @@ int main()
 
         ///////////IMPORTANT - DO NOT LOOSE ////////////
         // Complementary filter
-        float accelPitch = atan2(accel_y, accel_z) * RAD2DEG;
-        float accelRoll = atan2(accel_x, accel_z) * RAD2DEG;
+        // TODO: Not getting filter to work with atan2
+        // float accelPitch = atan2(accel_y, accel_z) * RAD2DEG;
+        // float accelRoll = atan2(accel_x, accel_z) * RAD2DEG;
 
         float _tau = 0.98f;
         float _dt = 0.004f;
 
-        // float _dt = 0.000010f; // this is a guess
-        // clock_t c_time = clock();
-        // int diff = (double)(c_time - t);
-        // float _dt = (float)diff / 1000000.f;
+        // TODO: Get real delta time
         
-        
-        attitude.roll = _tau * (attitude.roll - gyro->y * _dt) + (1.f - _tau) * accel_y;
-        attitude.pitch = _tau * (attitude.pitch + gyro->x * _dt) + (1.f - _tau) * accel_x;
+        attitude.pitch = _tau * (attitude.pitch + gyro->x * _dt) + 0.02 * accel_x;
+        attitude.roll = _tau * (attitude.roll - gyro->y * _dt) + 0.02 * accel_y;
         attitude.yaw += gyro->z * _dt;
         /////////////////////////////////////////////
 
 
+        /////////////////////////////////////////////
         // Kalman filter
-          // Convert gyro values to deg/s
+        // Convert gyro values to deg/s
         double gyroXrate = gyro->x / 131.0;  
         double gyroYrate = gyro->y / 131.0; 
 
@@ -286,8 +351,8 @@ int main()
         double roll, pitch;
 
         #ifdef RESTRICT_PITCH
-            roll = atan2(accY, accZ) * RAD2DEG;
-            pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD2DEG;  
+            roll = atan2(accel_y, accel_z) * RAD2DEG;
+            pitch = atan(-accel_x / sqrt(accel_y * accel_y + accel_z * accel_z)) * RAD2DEG;  
         #else
             roll = atan(accY / sqrt(accel_x * accel_x + accel_z * accel_z)) * RAD2DEG;
             pitch = atan2(-accel_x, accel_z) * RAD2DEG;
@@ -305,49 +370,21 @@ int main()
         if (gyroYangle < -180 || gyroYangle > 180)
             gyroYangle = kalAngleY;
 
+        /////////////////////////////////////////////
+
+        pid_control(0.0, attitude.pitch);
+
+        // get scalled value and contrain it
+        int value = motor_slope * motor2_pwm + motor_intercept;
+        int constrained_value = constrain(value, 550, MOTOR_PWM_MAX);
+
+        // send PWM values
+        pwm_set_chan_level(THROT_SLICE, THROT_CHANNEL, constrained_value);
+
         // Print all the measurements
-        // printf("%f,%f,%f\n", gyro->x, gyro->y, gyro->z);
-        // printf("Roll: %.4f, Pitch: %.4f, Yaw: %.4f\n", attitude.r, attitude.p, attitude.y);
-        printf(">C-Roll:%.4f\n", attitude.roll);
+        printf(">PID_Pitch:%.4f\n", motor2_pwm);
+        printf(">PWM-2:%d\n", constrained_value);
         printf(">C-Pitch:%.4f\n", attitude.pitch);
-
-        printf(">K-Roll:%.4f\n", kalAngleX);
-        printf(">K-Pitch:%.4f\n", kalAngleY);
-        // printf(">Yaw:%.4f\n", attitude.y);
-        
-        // printf("Accel: %f, %f, %f - Gyro: %f, %f, %f - Temp: %f°C - Temp: %f°F\n", accel->x, accel->y, accel->z, gyro->x, gyro->y, gyro->z, tempC, tempF);
-
-        // // Print all motion interrupt flags
-        // printf("Overflow: %d - Freefall: %d - Inactivity: %d, Activity: %d, DataReady: %d\n",
-        //        activities->isOverflow,
-        //        activities->isFreefall,
-        //        activities->isInactivity,
-        //        activities->isActivity,
-        //        activities->isDataReady);
-
-        // // Print all motion detect interrupt flags
-        // printf("PosX: %d - NegX: %d -- PosY: %d - NegY: %d -- PosZ: %d - NegZ: %d\n",
-        //        activities->isPosActivityOnX,
-        //        activities->isNegActivityOnX,
-        //        activities->isPosActivityOnY,
-        //        activities->isNegActivityOnY,
-        //        activities->isPosActivityOnZ,
-        //        activities->isNegActivityOnZ);
-
-        // int value = slope * attitude.r + intercept;
-        // int value2 = slope * (attitude.r * -1) + intercept;
-
-        // int value3 = slope * attitude.p + intercept;
-        // int value4 = slope * (attitude.p * -1) + intercept;
-
-
-        // printf("%d\n", value);
-        // printf("%d\n", value2);
-        // move(slice_1, channel_1, value);
-        // move(slice_3, channel_3, value2);
-
-        // move(slice_2, channel_2, value3);
-        // move(slice_4, channel_4, value4);
 
         sleep_ms(10);
     }
